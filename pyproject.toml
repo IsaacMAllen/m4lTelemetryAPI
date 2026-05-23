@@ -1,0 +1,42 @@
+[project]
+name = "m4l-telemetry-api"
+version = "0.1.0"
+description = "Receiver API for bz.telemetry events emitted by Max for Live devices."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "bugbytz" }]
+
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.32.1",
+    "pydantic==2.10.4",
+    "pydantic-settings==2.7.0",
+    "sqlalchemy[asyncio]==2.0.36",
+    "asyncpg==0.30.0",
+    "alembic==1.14.0",
+    "orjson==3.10.13",
+    "python-json-logger==3.2.1",
+    "prometheus-client==0.21.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.4",
+    "pytest-asyncio==0.25.0",
+    "httpx==0.28.1",
+    "ruff==0.8.4",
+    "mypy==1.13.0",
+    "types-orjson",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "S", "RUF"]
+ignore = ["S101", "B008"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

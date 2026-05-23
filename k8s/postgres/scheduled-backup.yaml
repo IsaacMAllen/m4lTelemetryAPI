@@ -1,0 +1,16 @@
+# Nightly base backup at 03:17 UTC (off-peak; the seven-minute offset spreads
+# load across the cluster if you stand up several CNPG clusters).
+#
+# WAL is archived continuously by the Cluster itself; this CR just adds
+# regular base backups so PITR has a recent restore-from point.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: m4l-telemetry-pg-nightly
+  namespace: telemetry
+spec:
+  schedule: "0 17 3 * * *"   # cron with seconds: sec min hour day month weekday
+  backupOwnerReference: self
+  cluster:
+    name: m4l-telemetry-pg
+  immediate: true            # take one right away on first apply

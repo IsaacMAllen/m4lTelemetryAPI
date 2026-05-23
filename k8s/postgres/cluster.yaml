@@ -1,0 +1,104 @@
+# CloudNativePG Cluster: Postgres for the telemetry receiver.
+#
+# Why instances=1 by default
+#   Telemetry has a "lossy is acceptable" tier. We start with a single primary
+#   on a 10Gi PVC and grow when volume warrants. To go HA, change
+#   `instances: 1` to `instances: 3` and apply -- CNPG provisions standbys
+#   with streaming replication.
+#
+# Storage class
+#   We don't pin a storageClassName so this works on kind / cloud / on-prem.
+#   In production you should pin to a fast-block CSI (e.g. `gp3` on AWS,
+#   `pd-ssd` on GCP, or your local-path-provisioner on kind).
+#
+# Backups
+#   `backup.barmanObjectStore` writes WAL + base backups to MinIO via the
+#   `m4l-telemetry-pg-backups` ObjectStore (k8s/postgres/object-store.yaml).
+#   The ScheduledBackup CR (scheduled-backup.yaml) takes a base backup
+#   nightly. Recovery uses CNPG's standard `bootstrap.recovery` flow.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: m4l-telemetry-pg
+  namespace: telemetry
+  labels:
+    app.kubernetes.io/name: m4l-telemetry-pg
+    app.kubernetes.io/part-of: m4l-telemetry
+spec:
+  description: "Postgres backing store for the bz.telemetry receiver."
+
+  # Pin to a known-good Postgres image curated by the CNPG team.
+  imageName: ghcr.io/cloudnative-pg/postgresql:16.4
+
+  instances: 1
+
+  # The application user + database CNPG creates on first boot. The Secret
+  # `m4l-telemetry-pg-app` is generated automatically and contains the
+  # password (rotated by CNPG when you set `enablePasswordRotation: true`).
+  bootstrap:
+    initdb:
+      database: telemetry
+      owner: telemetry
+      encoding: UTF8
+      localeCollate: C
+      localeCType: C
+      postInitApplicationSQL:
+        # JSONB GIN indexes use these; the parent table is created by Alembic
+        # but having pg_trgm available means future "fuzzy" filtering on
+        # event names is one CREATE INDEX away.
+        - CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+  storage:
+    size: 10Gi
+    resizeInUseVolumes: true
+    # storageClassName: <set this in production, e.g. "gp3">
+
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+    limits:
+      cpu: "1"
+      memory: "1Gi"
+
+  # Tune Postgres for an append-only, write-heavy workload.
+  postgresql:
+    parameters:
+      # Telemetry inserts are ~1 KB. Bigger work_mem helps the occasional
+      # /v1/stats GIN scan; we're not RAM-constrained.
+      shared_buffers: "256MB"
+      effective_cache_size: "768MB"
+      work_mem: "16MB"
+      maintenance_work_mem: "128MB"
+      # Mostly INSERTs -> autovacuum can be lazy.
+      autovacuum_naptime: "30s"
+      # Helpful for CNPG's barman-cloud archiver.
+      archive_timeout: "5min"
+      max_connections: "100"
+      # WAL knobs friendly to streaming + backups.
+      wal_compression: "on"
+
+  monitoring:
+    enablePodMonitor: true
+
+  # ---- Backups -------------------------------------------------------------
+  # We back up to MinIO (in-cluster). When you migrate to AWS S3 / R2 just
+  # update the ObjectStore (k8s/postgres/object-store.yaml) and the
+  # `barmanObjectStore` reference here doesn't have to change.
+  backup:
+    retentionPolicy: "14d"
+    barmanObjectStore:
+      destinationPath: s3://cnpg-backups/m4l-telemetry-pg
+      endpointURL: http://minio.telemetry.svc.cluster.local:9000
+      s3Credentials:
+        accessKeyId:
+          name: minio-cnpg-credentials
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: minio-cnpg-credentials
+          key: SECRET_ACCESS_KEY
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+        immediateCheckpoint: true

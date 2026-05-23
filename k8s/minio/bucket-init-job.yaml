@@ -1,0 +1,44 @@
+# One-shot Job that creates the `cnpg-backups` bucket inside MinIO.
+# Idempotent — re-running is a no-op once the bucket exists.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-bucket-init
+  namespace: telemetry
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: minio
+        app.kubernetes.io/component: bucket-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: mc
+          image: quay.io/minio/mc:RELEASE.2024-11-21T17-21-54Z
+          envFrom:
+            - secretRef: { name: minio-credentials }
+          # `mc` reads MINIO_ROOT_USER / _PASSWORD from envFrom; we just need
+          # to point it at the in-cluster service.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              # Wait for MinIO to accept connections (its readinessProbe will
+              # eventually flip but the Service may select us first).
+              until mc alias set local http://minio.telemetry.svc.cluster.local:9000 \
+                    "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+                echo "waiting for minio..."
+                sleep 2
+              done
+              mc mb --ignore-existing local/cnpg-backups
+              # Lifecycle: prune backup objects after 30 days.  CNPG's own
+              # retention policy (14d) handles base backups; this is the
+              # safety net.
+              mc ilm rule add --expire-days 30 local/cnpg-backups || true
+              echo "bucket ready"
+          resources:
+            requests: { cpu: 25m, memory: 64Mi }
+            limits:   { cpu: 200m, memory: 128Mi }

@@ -1,0 +1,55 @@
+# Local development stack: API + a throwaway Postgres + a one-shot migration
+# job.  Run with:
+#
+#     docker compose up --build
+#
+# The `migrate` service runs alembic against the same DB and exits.  The `api`
+# service depends_on it so we never start serving against an un-migrated DB.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: telemetry
+      POSTGRES_PASSWORD: telemetry
+      POSTGRES_DB: telemetry
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U telemetry -d telemetry"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  migrate:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TELEMETRY_DATABASE_URL: postgresql+asyncpg://telemetry:telemetry@postgres:5432/telemetry
+    entrypoint: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  api:
+    build: .
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      TELEMETRY_DATABASE_URL: postgresql+asyncpg://telemetry:telemetry@postgres:5432/telemetry
+      TELEMETRY_LOG_LEVEL: INFO
+      # Comment in to require auth locally:
+      # TELEMETRY_INGEST_TOKENS: dev-local-token
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/healthz').status==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

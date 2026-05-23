@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: telemetry
+  labels:
+    app.kubernetes.io/name: m4l-telemetry-api
+    app.kubernetes.io/part-of: bugbytz

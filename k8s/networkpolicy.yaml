@@ -1,0 +1,47 @@
+# Deny-by-default with explicit allows.  Inbound traffic only comes from the
+# ingress controller (or a port-forward in local dev); outbound only goes to
+# the in-namespace CNPG primary, MinIO (for diagnostics), and DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: m4l-telemetry-api
+  namespace: telemetry
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: m4l-telemetry-api
+      app.kubernetes.io/component: api
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8080
+          protocol: TCP
+    # Local dev: allow port-forward (kubectl proxy) connections.
+    - from:
+        - podSelector: {}      # any pod in the same namespace
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Postgres (CNPG primary).  CNPG labels its pods with cnpg.io/cluster.
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: m4l-telemetry-pg
+      ports:
+        - port: 5432
+          protocol: TCP

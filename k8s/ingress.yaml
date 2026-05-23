@@ -1,0 +1,30 @@
+# Public-facing ingress.  Adjust host + cluster-issuer for your environment.
+# bz.telemetry POSTs over HTTPS, so cert-manager + a real cert is mandatory.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: m4l-telemetry-api
+  namespace: telemetry
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    # Cap inbound body so a malicious client can't DoS us with huge POSTs.
+    # Matches TELEMETRY_MAX_BODY_BYTES (default 4 MiB).
+    nginx.ingress.kubernetes.io/proxy-body-size: "4m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["telemetry.bugbytz.com"]
+      secretName: m4l-telemetry-api-tls
+  rules:
+    - host: telemetry.bugbytz.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: m4l-telemetry-api
+                port:
+                  number: 80

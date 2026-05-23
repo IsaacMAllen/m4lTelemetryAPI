@@ -1,0 +1,11 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: m4l-telemetry-api
+  namespace: telemetry
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: m4l-telemetry-api
+      app.kubernetes.io/component: api
