@@ -192,11 +192,20 @@ In a Max patcher:
 [token   <whatever-you-put-in-TELEMETRY_INGEST_TOKENS(   ↗
 ```
 
-For the local kind workflow:
+For the local kind workflow, **use `127.0.0.1` (not `localhost`)**:
 
 ```
-[endpoint http://localhost:8080/v1/events(            →  [bz.telemetry @vendor bugbytz @device livesaver @version 2.0.4]
+[endpoint http://127.0.0.1:8080/v1/events(            →  [bz.telemetry @vendor bugbytz @device livesaver @version 2.0.4]
 ```
+
+> Why 127.0.0.1 instead of localhost?
+> Max's host process enforces App Transport Security (ATS), which blocks
+> plain http:// requests. macOS *supposedly* exempts the literal hostname
+> `localhost`, but in practice the exemption is unreliable inside hosted
+> plugin runtimes — NSURLSession returns `NSURLErrorCannotFindHost`
+> ("A server with the specified hostname could not be found") even when
+> the local API is healthy. The numeric IP avoids the ATS host-name path
+> entirely. For production, use HTTPS and ATS is a non-issue.
 
 (no token needed; the Path B stack ships with auth disabled by default).
 

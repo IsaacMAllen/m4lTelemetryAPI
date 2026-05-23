@@ -22,13 +22,16 @@ set -euo pipefail
 
 readonly CLUSTER_NAME="m4l-telemetry"
 readonly NAMESPACE="telemetry"
-readonly CNPG_VERSION="1.24.0"
+readonly CNPG_VERSION="1.29.1"
 readonly KIND_NODE_IMAGE="kindest/node:v1.31.0"
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-log()  { printf '\033[1;34m[bootstrap]\033[0m %s\n' "$*"; }
-ok()   { printf '\033[1;32m[bootstrap]\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[bootstrap]\033[0m %s\n' "$*"; }
+# All log output goes to stderr so that helpers like `build_and_load_api`
+# can echo their return value (the image tag) on stdout without it being
+# polluted by progress messages.
+log()  { printf '\033[1;34m[bootstrap]\033[0m %s\n' "$*" >&2; }
+ok()   { printf '\033[1;32m[bootstrap]\033[0m %s\n' "$*" >&2; }
+warn() { printf '\033[1;33m[bootstrap]\033[0m %s\n' "$*" >&2; }
 fail() { printf '\033[1;31m[bootstrap]\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
@@ -130,11 +133,26 @@ ensure_namespace_and_minio() {
 ensure_postgres() {
   kubectl apply -f "$REPO_ROOT/k8s/postgres/cluster.yaml"
   log "waiting for the Postgres cluster to bootstrap (this is the slowest step)..."
-  # CNPG sets a `cnpg.io/instanceRole=primary` label and a corresponding
-  # `Cluster.Status.ReadyInstances` count.  We just wait on the primary pod.
-  kubectl -n "$NAMESPACE" wait --for=condition=Ready \
-    pod -l cnpg.io/cluster=m4l-telemetry-pg,cnpg.io/instanceRole=primary \
-    --timeout=300s
+  # CNPG runs an `initdb` Job first, *then* creates the instance pod.  So we
+  # can't just wait on the pod -- it doesn't exist yet.  Instead poll the
+  # Cluster's status until readyInstances >= 1 and phase reports healthy.
+  local deadline=$(( $(date +%s) + 360 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    local phase ready
+    phase="$(kubectl -n "$NAMESPACE" get cluster m4l-telemetry-pg \
+              -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    ready="$(kubectl -n "$NAMESPACE" get cluster m4l-telemetry-pg \
+              -o jsonpath='{.status.readyInstances}' 2>/dev/null || true)"
+    log "  phase=${phase:-pending} ready=${ready:-0}"
+    if [ "${ready:-0}" -ge 1 ] 2>/dev/null && \
+       [ "$phase" = "Cluster in healthy state" ]; then
+      break
+    fi
+    sleep 5
+  done
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    fail "Postgres cluster did not become healthy in 6 minutes.  Inspect with: kubectl -n $NAMESPACE describe cluster m4l-telemetry-pg"
+  fi
   kubectl apply -f "$REPO_ROOT/k8s/postgres/scheduled-backup.yaml"
   ok "Postgres ready"
 }
@@ -153,23 +171,27 @@ build_and_load_api() {
 
 apply_api() {
   local image=$1
-  # Patch image: the committed deployment.yaml uses the GHCR coordinate;
-  # for local kind we substitute the locally-built dev tag.  We pipe
-  # through `kubectl set image` after apply so the source manifest stays
-  # untouched.
-  kubectl apply -f "$REPO_ROOT/k8s/secret.example.yaml"   # tokens (empty)
-  kubectl apply -f "$REPO_ROOT/k8s/deployment.yaml"
-  kubectl -n "$NAMESPACE" set image deploy/m4l-telemetry-api "api=$image"
+  # The committed deployment.yaml + migrate-job.yaml reference the GHCR
+  # coordinate.  For local kind we substitute the locally-built dev tag
+  # via sed BEFORE applying -- modifying a Job's pod template after creation
+  # is forbidden (`field is immutable`).
+  local subst="ghcr.io/bugbytz/m4l-telemetry-api:latest"
+
+  # Local dev: create an EMPTY ingest-tokens secret so auth is disabled.
+  # Production overrides this from a real Secret (see k8s/secret.example.yaml).
+  kubectl -n "$NAMESPACE" create secret generic m4l-telemetry-api-tokens \
+    --from-literal=ingest-tokens="" \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+  log "applying API Deployment with image=$image"
+  sed "s|image: ${subst}|image: ${image}|g" "$REPO_ROOT/k8s/deployment.yaml" \
+    | kubectl apply -f -
   kubectl apply -f "$REPO_ROOT/k8s/service.yaml"
-  kubectl apply -f "$REPO_ROOT/k8s/migrate-job.yaml"
-  kubectl -n "$NAMESPACE" set image job/m4l-telemetry-migrate "alembic=$image" \
-    || true   # if Job already completed, we'll re-create it below
 
   log "running migration..."
-  # Delete any prior completed Job before applying so we don't conflict.
   kubectl -n "$NAMESPACE" delete job m4l-telemetry-migrate --ignore-not-found
-  kubectl apply -f "$REPO_ROOT/k8s/migrate-job.yaml"
-  kubectl -n "$NAMESPACE" set image job/m4l-telemetry-migrate "alembic=$image"
+  sed "s|image: ${subst}|image: ${image}|g" "$REPO_ROOT/k8s/migrate-job.yaml" \
+    | kubectl apply -f -
   kubectl -n "$NAMESPACE" wait --for=condition=complete \
     job/m4l-telemetry-migrate --timeout=180s
 

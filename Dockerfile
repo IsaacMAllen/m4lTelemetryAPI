@@ -40,8 +40,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends tini \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system app \
-    && useradd  --system --gid app --home /app --shell /usr/sbin/nologin app
+    && groupadd --gid 1000 app \
+    && useradd  --uid 1000 --gid 1000 --home /app --shell /usr/sbin/nologin app
 
 COPY --from=builder /opt/venv /opt/venv
 

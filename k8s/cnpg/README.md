@@ -9,9 +9,11 @@ Pinned to a specific minor release. Bump the version when you bump it
 elsewhere in the repo (see ARCHITECTURE.md).
 
 ```bash
-# 1.24.x is the current LTS at the time this was written.
+# 1.29.x is the current stable at the time this was written.  Older releases
+# (<= 1.24) ship CRDs with validation schemas that segfault kubectl 1.30+ on
+# server-side apply -- always pin to a recent CNPG release.
 kubectl apply --server-side -f \
-  https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.24/releases/cnpg-1.24.0.yaml
+  https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.29/releases/cnpg-1.29.1.yaml
 ```
 
 This creates the `cnpg-system` namespace, installs the CRDs, and starts a
@@ -32,7 +34,7 @@ You should see a handful of CRDs (`clusters.postgresql.cnpg.io`,
 
 ```bash
 kubectl delete -f \
-  https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.24/releases/cnpg-1.24.0.yaml
+  https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.29/releases/cnpg-1.29.1.yaml
 ```
 
 > **Warning** Uninstalling the operator does NOT delete `Cluster` resources
