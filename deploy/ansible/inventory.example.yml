@@ -1,0 +1,10 @@
+# Copy this file to inventory.yml and fill in the real values.
+# inventory.yml is gitignored.
+all:
+  children:
+    telemetry:
+      hosts:
+        m4l-telemetry-prod:
+          ansible_host: 1.2.3.4               # ← your RackNerd VPS IP
+          ansible_user: deploy
+          ansible_python_interpreter: /usr/bin/python3

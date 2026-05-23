@@ -1,0 +1,32 @@
+# Copy this to group_vars/all.yml and fill in the real values.
+# group_vars/ is gitignored.
+#
+# These vars are consumed by playbook.yml and the templates under templates/.
+
+# --- Domain / TLS -----------------------------------------------------------
+api_fqdn: api.yourdomain.com           # public hostname for the API
+admin_email: you@yourdomain.com        # used by Caddy/Let's Encrypt for renewal alerts
+
+# --- Frontend (CORS) --------------------------------------------------------
+# Origins that can call the API from a browser.  Add the bytr Cloudflare
+# Pages origin here once you know it.  For preview deploys you may want to
+# add the *.pages.dev domain too.
+api_cors_origins:
+  - https://bytr.yourdomain.com
+
+# --- App image (GHCR) -------------------------------------------------------
+api_image: ghcr.io/your-github-user/m4l-telemetry-api
+api_image_tag: latest                  # GHA bumps this on every deploy
+
+# --- App runtime ------------------------------------------------------------
+api_install_dir: /opt/m4l-telemetry
+api_data_volume: m4l-telemetry-pgdata  # named docker volume for postgres
+api_workers: 2                         # uvicorn workers per container
+api_replicas: 1                        # number of api containers (single-VPS)
+
+# --- Backups (Backblaze B2 via restic) --------------------------------------
+backup_enabled: true
+backup_bucket: m4l-telemetry-backups   # B2 bucket name
+backup_retention_daily: 14             # keep 14 daily snapshots
+backup_retention_weekly: 4             # keep 4 weekly
+backup_retention_monthly: 6            # keep 6 monthly

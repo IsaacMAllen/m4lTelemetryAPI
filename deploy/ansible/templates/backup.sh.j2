@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# /usr/local/bin/m4l-telemetry-backup  --  managed by Ansible
+#
+# Run nightly by cron.  Streams `pg_dump` directly into restic, which
+# encrypts and chunks the data, then ships it to Backblaze B2.
+#
+# Restore (worst case):
+#     export RESTIC_REPOSITORY=... RESTIC_PASSWORD=... B2_ACCOUNT_ID=... B2_ACCOUNT_KEY=...
+#     restic snapshots
+#     restic dump <snapshot-id> /m4l-telemetry-pg.dump | docker compose exec -T postgres \
+#         psql -U telemetry telemetry
+
+set -euo pipefail
+
+INSTALL_DIR={{ api_install_dir }}
+PG_SERVICE=postgres
+
+# shellcheck disable=SC1091
+source "$INSTALL_DIR/.env"
+
+export RESTIC_REPOSITORY RESTIC_PASSWORD B2_ACCOUNT_ID B2_ACCOUNT_KEY
+
+# Initialise the restic repo on first run (idempotent).
+restic snapshots --quiet >/dev/null 2>&1 || restic init
+
+cd "$INSTALL_DIR"
+
+# Stream pg_dump straight through restic's stdin -- no temp file, never
+# touches local disk in plaintext.
+docker compose exec -T "$PG_SERVICE" \
+    pg_dump -U telemetry --format=custom --no-owner --no-privileges telemetry \
+    | restic backup --stdin --stdin-filename m4l-telemetry-pg.dump \
+        --tag nightly \
+        --tag "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# Prune old snapshots per retention policy.
+restic forget \
+    --keep-daily   {{ backup_retention_daily }} \
+    --keep-weekly  {{ backup_retention_weekly }} \
+    --keep-monthly {{ backup_retention_monthly }} \
+    --prune
+
+# Health-check: verify a random subset of pack files actually decrypt.
+restic check --read-data-subset=2%

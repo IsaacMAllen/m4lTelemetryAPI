@@ -1,0 +1,122 @@
+# Build the API image, push to GitHub Container Registry, then SSH to the
+# RackNerd VPS and roll the running compose stack onto the new image.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   VPS_HOST          - public IP or hostname of the VPS
+#   VPS_USER          - "deploy"
+#   VPS_SSH_KEY       - private key whose pubkey is in deploy@VPS:~/.ssh/authorized_keys
+#                       Generate locally: ssh-keygen -t ed25519 -f deploy_key -C "gha"
+#                       Paste the *contents* of deploy_key (not deploy_key.pub) here.
+#
+# Required repo variables (Settings → Secrets and variables → Actions → Variables):
+#   API_INSTALL_DIR   - "/opt/m4l-telemetry"  (the dir Ansible created)
+#
+# The image package on GHCR can be made public so the VPS pulls without
+# auth (Settings → Packages → m4l-telemetry-api → Change visibility).
+# If you keep it private, add a step that does `docker login ghcr.io` on
+# the VPS using a fine-grained PAT.
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tag
+        id: meta
+        run: |
+          # Use the short commit SHA + 'latest' so deploys are auditable
+          # AND rollback-friendly.
+          short_sha=$(git rev-parse --short HEAD)
+          echo "image_tag=$short_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Build + push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/m4l-telemetry-api:latest
+            ghcr.io/${{ github.repository_owner }}/m4l-telemetry-api:${{ steps.meta.outputs.image_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Roll stack on VPS
+        env:
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+          INSTALL_DIR: ${{ vars.API_INSTALL_DIR }}
+          GH_OWNER: ${{ github.repository_owner }}
+        run: |
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} bash -s <<EOF
+            set -euo pipefail
+            cd "$INSTALL_DIR"
+
+            # Update the image tag the compose file references by writing
+            # an override that pins the rolled SHA.  Compose merges this
+            # with the base file at runtime.
+            cat > docker-compose.override.yml <<YAML
+          services:
+            api:
+              image: ghcr.io/$GH_OWNER/m4l-telemetry-api:$IMAGE_TAG
+            migrate:
+              image: ghcr.io/$GH_OWNER/m4l-telemetry-api:$IMAGE_TAG
+          YAML
+
+            docker compose pull api migrate
+            docker compose run --rm migrate
+            docker compose up -d --no-deps api
+            docker compose ps
+          EOF
+
+      - name: Smoke check
+        run: |
+          # /healthz is unauthenticated; succeed only on HTTP 200.
+          for i in 1 2 3 4 5; do
+              if curl -fsS "https://${{ secrets.VPS_HOST_FQDN || secrets.VPS_HOST }}/healthz" >/dev/null; then
+                  echo "healthy"
+                  exit 0
+              fi
+              echo "attempt $i not ready, sleeping..."
+              sleep 5
+          done
+          echo "API did not return 200 from /healthz" >&2
+          exit 1

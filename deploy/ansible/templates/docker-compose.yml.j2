@@ -1,0 +1,87 @@
+# /opt/m4l-telemetry/docker-compose.yml  --  managed by Ansible
+#
+# Three services:
+#   - postgres : self-hosted Postgres 16 with a named volume.
+#   - migrate  : one-shot Alembic runner.  Compose `up -d` will start it but
+#                it will exit 0 once migrations apply.  Re-run on demand:
+#                  docker compose run --rm migrate
+#   - api      : the FastAPI service, exposed only on 127.0.0.1:8080.
+#                Caddy on the host forwards TLS traffic to it.
+#
+# Secrets come from /opt/m4l-telemetry/.env (chmod 600).  Compose's
+# `env_file` directive picks them up.
+
+name: m4l-telemetry
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: telemetry
+      POSTGRES_DB: telemetry
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # NOTE: we deliberately do NOT publish 5432 to the host.  Postgres is
+    # reachable only on the docker network, never on the public internet.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U telemetry -d telemetry"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    image: {{ api_image }}:{{ api_image_tag }}
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      TELEMETRY_DB_HOST: postgres
+      TELEMETRY_DB_PORT: "5432"
+      TELEMETRY_DB_USER: telemetry
+      TELEMETRY_DB_NAME: telemetry
+    command: ["alembic", "upgrade", "head"]
+
+  api:
+    image: {{ api_image }}:{{ api_image_tag }}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    env_file: .env
+    environment:
+      TELEMETRY_DB_HOST: postgres
+      TELEMETRY_DB_PORT: "5432"
+      TELEMETRY_DB_USER: telemetry
+      TELEMETRY_DB_NAME: telemetry
+      TELEMETRY_LOG_LEVEL: INFO
+      TELEMETRY_CORS_ORIGINS: "{{ api_cors_origins | join(',') }}"
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --workers
+      - "{{ api_workers }}"
+    ports:
+      # Bind ONLY to loopback.  Caddy on the host proxies external TLS
+      # traffic into here; the public internet never talks to uvicorn.
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    deploy:
+      replicas: {{ api_replicas }}
+
+volumes:
+  pgdata:
+    name: {{ api_data_volume }}

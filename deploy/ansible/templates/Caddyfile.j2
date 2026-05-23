@@ -1,0 +1,40 @@
+#
+# /etc/caddy/Caddyfile  --  managed by Ansible, edits will be overwritten
+#
+# Caddy automatically requests a Let's Encrypt cert for {{ api_fqdn }} on
+# first start and renews it ~30 days before expiry.  No certbot, no cron.
+#
+
+{
+    email {{ admin_email }}
+    # If you want HTTP/3 / QUIC, uncomment:
+    # servers {
+    #     protocols h1 h2 h2c h3
+    # }
+}
+
+{{ api_fqdn }} {
+    encode zstd gzip
+    log {
+        output file /var/log/caddy/api.access.log {
+            roll_size  20mb
+            roll_keep  10
+        }
+        format json
+    }
+
+    # Forward everything to the API container; Caddy handles TLS.
+    reverse_proxy 127.0.0.1:8080 {
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-For   {remote_host}
+    }
+
+    # Hardening headers.
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options    "nosniff"
+        X-Frame-Options           "DENY"
+        Referrer-Policy           "no-referrer"
+        Permissions-Policy        "interest-cohort=()"
+    }
+}
