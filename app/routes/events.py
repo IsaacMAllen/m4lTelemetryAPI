@@ -23,10 +23,13 @@ Error semantics (relevant to the client retry logic in telemetry_core.cpp):
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ValidationError
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,7 +38,7 @@ from ..config import Settings, get_settings
 from ..db import get_session
 from ..models import Event, EventKind, EventLevel
 from ..ndjson import parse_ndjson
-from ..schemas import IngestEvent, IngestResponse
+from ..schemas import EventListResponse, EventOut, IngestEvent, IngestResponse
 
 router = APIRouter(prefix="/v1", tags=["ingest"])
 
@@ -160,3 +163,146 @@ async def ingest_events(
         )
 
     return IngestResponse(accepted=accepted, rejected=rejected, errors=errors[:25])
+
+
+# ---------------------------------------------------------------------------
+# Read endpoints (consumed by the bytr web UI + ad-hoc curl)
+# ---------------------------------------------------------------------------
+def _row_to_out(row: Event) -> EventOut:
+    """Project an ORM row to the wire-shape used by GET /v1/events.
+
+    We stringify enums + UUIDs here so consumers don't have to.
+    """
+    return EventOut(
+        id=str(row.id),
+        received_at=row.received_at,
+        vendor=row.vendor,
+        device_name=row.device_name,
+        device_version=row.device_version,
+        device_id=row.device_id,
+        session_id=row.session_id,
+        user_id=row.user_id,
+        platform=row.platform,
+        max_version=row.max_version,
+        kind=row.kind.value if hasattr(row.kind, "value") else str(row.kind),
+        level=row.level.value if hasattr(row.level, "value") else str(row.level),
+        name=row.name,
+        message=row.message,
+        ts=row.ts,
+        ts_ms=row.ts_ms,
+        value=row.value,
+        unit=row.unit,
+        props=row.props or {},
+    )
+
+
+@router.get(
+    "/events",
+    response_model=EventListResponse,
+    summary="List events (paginated + filterable)",
+)
+async def list_events(
+    vendor: str | None = Query(default=None),
+    device_name: str | None = Query(default=None),
+    device_version: str | None = Query(default=None),
+    device_id: str | None = Query(default=None),
+    session_id: str | None = Query(default=None),
+    kind: list[EventKind] | None = Query(default=None),
+    level: list[EventLevel] | None = Query(default=None),
+    since: datetime | None = Query(default=None, description="Inclusive lower bound on ts"),
+    until: datetime | None = Query(default=None, description="Exclusive upper bound on ts"),
+    q: str | None = Query(default=None, description="Substring match against name + message"),
+    order: str = Query(default="desc", pattern="^(asc|desc)$"),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_session),
+) -> EventListResponse:
+    where_clauses = []
+    if vendor:
+        where_clauses.append(Event.vendor == vendor)
+    if device_name:
+        where_clauses.append(Event.device_name == device_name)
+    if device_version:
+        where_clauses.append(Event.device_version == device_version)
+    if device_id:
+        where_clauses.append(Event.device_id == device_id)
+    if session_id:
+        where_clauses.append(Event.session_id == session_id)
+    if kind:
+        where_clauses.append(Event.kind.in_(kind))
+    if level:
+        where_clauses.append(Event.level.in_(level))
+    if since is not None:
+        where_clauses.append(Event.ts >= since)
+    if until is not None:
+        where_clauses.append(Event.ts < until)
+    if q:
+        # ILIKE substring match -- fast enough for the volumes we're at; we
+        # can swap to pg_trgm + a GIN index if /v1/events?q= becomes hot.
+        like = f"%{q}%"
+        where_clauses.append(or_(Event.name.ilike(like), Event.message.ilike(like)))
+
+    base = select(Event)
+    if where_clauses:
+        for c in where_clauses:
+            base = base.where(c)
+
+    count_stmt = select(func.count()).select_from(base.subquery())
+    total = (await session.execute(count_stmt)).scalar_one()
+
+    order_col = desc(Event.ts) if order == "desc" else Event.ts
+    rows_stmt = base.order_by(order_col).limit(limit).offset(offset)
+    rows = (await session.execute(rows_stmt)).scalars().all()
+
+    return EventListResponse(
+        items=[_row_to_out(r) for r in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+# NOTE: /events/_facets must be declared BEFORE /events/{event_id} or the
+# path-param route catches "_facets" as a UUID candidate and returns 400.
+@router.get("/events/_facets", summary="Distinct values for filter dropdowns")
+async def event_facets(
+    since_hours: int = Query(default=24 * 7, ge=1, le=24 * 90),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, list[str]]:
+    """Return distinct vendor / device_name / device_version values seen in
+    the recent window so the UI can populate its filter dropdowns without
+    a full table scan."""
+    from datetime import timedelta, timezone as tz
+    since = datetime.now(tz.utc) - timedelta(hours=since_hours)
+
+    async def _distinct(col):
+        stmt = select(col).where(Event.ts >= since).distinct().order_by(col)
+        rows = (await session.execute(stmt)).scalars().all()
+        return [r for r in rows if r]
+
+    return {
+        "vendor": await _distinct(Event.vendor),
+        "device_name": await _distinct(Event.device_name),
+        "device_version": await _distinct(Event.device_version),
+        "device_id": await _distinct(Event.device_id),
+    }
+
+
+@router.get("/events/{event_id}", response_model=EventOut, summary="Fetch a single event")
+async def get_event(
+    event_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> EventOut:
+    try:
+        eid = uuid.UUID(event_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="event_id must be a UUID",
+        ) from exc
+    row = (
+        await session.execute(select(Event).where(Event.id == eid))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="event not found")
+    return _row_to_out(row)

@@ -9,7 +9,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import desc, func, select
+from sqlalchemy import cast, desc, func, select, text
+from sqlalchemy.dialects.postgresql import INTERVAL
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
@@ -74,8 +75,13 @@ async def timeline(
 ) -> list[StatsBucket]:
     """Time-bucketed event count, optionally filtered by kind."""
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    # Postgres' date_bin() insists on `interval` for arg #1; SQLAlchemy + asyncpg
+    # otherwise binds the bucket size as varchar and the planner can't pick a
+    # function overload, so we cast explicitly.
     bucket = func.date_bin(
-        f"{bucket_minutes} minutes", Event.ts, datetime(1970, 1, 1, tzinfo=timezone.utc)
+        cast(text(f"'{bucket_minutes} minutes'"), INTERVAL),
+        Event.ts,
+        datetime(1970, 1, 1, tzinfo=timezone.utc),
     )
 
     q = select(bucket.label("bucket"), func.count(Event.id).label("count")).where(

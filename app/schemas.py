@@ -99,3 +99,36 @@ class VendorStats(BaseModel):
     crashes: int
     errors: int
     last_seen: datetime | None
+
+
+class EventOut(BaseModel):
+    """Read-side projection of a stored event row."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    received_at: datetime
+    vendor: str
+    device_name: str
+    device_version: str
+    device_id: str
+    session_id: str
+    user_id: str
+    platform: str
+    max_version: str
+    kind: str
+    level: str
+    name: str
+    message: str | None
+    ts: datetime
+    ts_ms: int
+    value: float | None
+    unit: str | None
+    props: dict[str, Any]
+
+
+class EventListResponse(BaseModel):
+    items: list[EventOut]
+    total: int
+    limit: int
+    offset: int

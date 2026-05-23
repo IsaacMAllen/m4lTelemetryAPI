@@ -12,3 +12,8 @@ venv/
 htmlcov/
 *.log
 .DS_Store
+
+# Production deploy artefacts -- contain secrets / host-specific data
+deploy/ansible/inventory.yml
+deploy/ansible/group_vars/
+!deploy/ansible/group_vars.example.yml
