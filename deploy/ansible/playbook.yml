@@ -90,11 +90,22 @@
         - { direction: outgoing, policy: allow }
       tags: [base]
 
-    - name: UFW allow ssh, http, https
+    - name: UFW allow SSH (via app profile)
       community.general.ufw:
         rule: allow
-        name: "{{ item }}"
-      loop: [OpenSSH, http, https]
+        name: OpenSSH
+      tags: [base]
+
+    # The community.general.ufw module's `name:` resolves only against
+    # `/etc/ufw/applications.d/`.  Ubuntu ships OpenSSH but not generic
+    # http/https profiles -- those only appear once a webserver package
+    # registers them.  Using plain ports avoids the chicken-and-egg.
+    - name: UFW allow HTTP + HTTPS (by port)
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop: ["80", "443"]
       tags: [base]
 
     - name: UFW enable
@@ -213,19 +224,44 @@
         force: false
       tags: [app]
 
-    - name: Pull api image
+    # First deploy is a chicken-and-egg: this playbook configures the box
+    # before any GHA run has populated GHCR, so the image probably doesn't
+    # exist yet.  We try to pull, then check whether it actually landed.
+    # If it didn't, we skip the compose-up + migrate steps entirely; the
+    # first successful GHA deploy will roll the stack for us.
+    - name: Try to pull api image (may fail on first bootstrap)
       community.docker.docker_image:
         name: "{{ api_image }}:{{ api_image_tag }}"
         source: pull
-      tags: [app, deploy]
       register: pull_result
-      failed_when: false   # first time the image may not exist yet; ignore.
+      failed_when: false
+      changed_when: pull_result is succeeded
+      tags: [app, deploy]
+
+    - name: Check whether the image is now locally available
+      ansible.builtin.command: "docker image inspect {{ api_image }}:{{ api_image_tag }}"
+      register: image_inspect
+      failed_when: false
+      changed_when: false
+      tags: [app, deploy]
+
+    - name: Heads-up if image not on GHCR yet
+      ansible.builtin.debug:
+        msg: |
+          Image {{ api_image }}:{{ api_image_tag }} is not yet on GHCR.
+          Skipping compose up + migrations -- the first GitHub Actions
+          deploy will publish the image and roll the stack for you.
+          Everything else on the box (Caddy, postgres volume, .env,
+          docker-compose.yml) is already in place.
+      when: image_inspect.rc != 0
+      tags: [app, deploy]
 
     - name: Start / update compose stack
       community.docker.docker_compose_v2:
         project_src: "{{ api_install_dir }}"
         state: present
         pull: missing
+      when: image_inspect.rc == 0
       tags: [app, deploy]
 
     - name: Run database migrations (alembic)
@@ -234,6 +270,7 @@
         services: [migrate]
         state: present
         recreate: always
+      when: image_inspect.rc == 0
       tags: [app, deploy]
 
     # ------------------------------------------------------------- backups ---
@@ -290,3 +327,7 @@
         project_src: "{{ api_install_dir }}"
         state: present
         recreate: always
+      # On first bootstrap the image isn't on GHCR yet, so a recreate would
+      # try to pull and fail.  Skip until the registry has the image; the
+      # GitHub Actions deploy workflow rolls the stack from then on.
+      when: image_inspect.rc | default(1) == 0

@@ -66,11 +66,17 @@ We need a non-root user before Ansible can SSH in. Five commands.
 # from your laptop, in this repo:
 cd ~/development/m4lTelemetryAPI/deploy/scripts
 
-# copy your laptop's SSH pubkey to the VPS root account (RackNerd asks for
-# the root password it emailed you).  Skip if you've already done this.
+# (1) Copy your laptop's SSH pubkey to the VPS root account.  REQUIRED --
+#     skipping this is the #1 way to lock yourself out.  RackNerd asks for
+#     the root password it emailed you.
 ssh-copy-id root@<VPS_IP>
 
-# upload + run the bootstrap script
+# (2) Verify pubkey login works BEFORE running the bootstrap.  If this
+#     prompts you for a password, ssh-copy-id didn't take and you must
+#     fix that first.
+ssh root@<VPS_IP> 'echo ok'
+
+# (3) Upload + run the bootstrap script
 scp bootstrap-server.sh root@<VPS_IP>:/root/
 ssh root@<VPS_IP> 'bash /root/bootstrap-server.sh'
 ```

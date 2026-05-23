@@ -35,6 +35,7 @@ jobs:
       packages: write
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
+      owner_lc: ${{ steps.meta.outputs.owner_lc }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,13 +49,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute image tag
+      - name: Compute image tag + lowercased owner
         id: meta
         run: |
-          # Use the short commit SHA + 'latest' so deploys are auditable
-          # AND rollback-friendly.
+          # Short SHA tag for auditable + rollback-friendly deploys.
           short_sha=$(git rev-parse --short HEAD)
           echo "image_tag=$short_sha" >> "$GITHUB_OUTPUT"
+
+          # GHCR requires lowercase repository names.  GitHub usernames
+          # preserve case ("IsaacMAllen"), so we have to coerce ourselves.
+          owner_lc=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          echo "owner_lc=$owner_lc" >> "$GITHUB_OUTPUT"
 
       - name: Build + push image
         uses: docker/build-push-action@v6
@@ -64,8 +69,8 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: |
-            ghcr.io/${{ github.repository_owner }}/m4l-telemetry-api:latest
-            ghcr.io/${{ github.repository_owner }}/m4l-telemetry-api:${{ steps.meta.outputs.image_tag }}
+            ghcr.io/${{ steps.meta.outputs.owner_lc }}/m4l-telemetry-api:latest
+            ghcr.io/${{ steps.meta.outputs.owner_lc }}/m4l-telemetry-api:${{ steps.meta.outputs.image_tag }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -84,7 +89,7 @@ jobs:
         env:
           IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
           INSTALL_DIR: ${{ vars.API_INSTALL_DIR }}
-          GH_OWNER: ${{ github.repository_owner }}
+          GH_OWNER: ${{ needs.build-and-push.outputs.owner_lc }}
         run: |
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} bash -s <<EOF
             set -euo pipefail

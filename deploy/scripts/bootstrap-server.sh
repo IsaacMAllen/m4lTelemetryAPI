@@ -34,11 +34,21 @@ echo "$DEPLOY_USER ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/90-$DEPLOY_USER"
 chmod 440 "/etc/sudoers.d/90-$DEPLOY_USER"
 
 echo "[bootstrap] copying root's authorized_keys to '$DEPLOY_USER'..."
+# Refuse to proceed if root has no authorized_keys -- otherwise we'd disable
+# password auth on a box where the new user can't log in, locking everyone
+# out.  The fix is: ssh-copy-id root@<IP> from your laptop, THEN re-run.
+if [[ ! -s /root/.ssh/authorized_keys ]]; then
+    echo
+    echo "ERROR: /root/.ssh/authorized_keys is missing or empty." >&2
+    echo "       That means your laptop's SSH pubkey isn't on this box yet."  >&2
+    echo "       Run this from your laptop FIRST, then re-run this script:"   >&2
+    echo "           ssh-copy-id root@\$VPS_IP"                                >&2
+    echo
+    exit 2
+fi
 mkdir -p "/home/$DEPLOY_USER/.ssh"
 chmod 700 "/home/$DEPLOY_USER/.ssh"
-if [[ -f /root/.ssh/authorized_keys ]]; then
-    cp /root/.ssh/authorized_keys "/home/$DEPLOY_USER/.ssh/authorized_keys"
-fi
+cp /root/.ssh/authorized_keys "/home/$DEPLOY_USER/.ssh/authorized_keys"
 chmod 600 "/home/$DEPLOY_USER/.ssh/authorized_keys"
 chown -R "$DEPLOY_USER:$DEPLOY_USER" "/home/$DEPLOY_USER/.ssh"
 
