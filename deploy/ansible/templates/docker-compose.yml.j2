@@ -43,6 +43,10 @@ services:
       TELEMETRY_DB_PORT: "5432"
       TELEMETRY_DB_USER: telemetry
       TELEMETRY_DB_NAME: telemetry
+      # The API reads pydantic-settings vars prefixed TELEMETRY_; postgres
+      # reads POSTGRES_PASSWORD.  We keep ONE secret in .env and surface it
+      # under both names here so the two services stay in lockstep.
+      TELEMETRY_DB_PASSWORD: ${POSTGRES_PASSWORD}
     command: ["alembic", "upgrade", "head"]
 
   api:
@@ -59,6 +63,7 @@ services:
       TELEMETRY_DB_PORT: "5432"
       TELEMETRY_DB_USER: telemetry
       TELEMETRY_DB_NAME: telemetry
+      TELEMETRY_DB_PASSWORD: ${POSTGRES_PASSWORD}     # see migrate service comment
       TELEMETRY_LOG_LEVEL: INFO
       TELEMETRY_CORS_ORIGINS: "{{ api_cors_origins | join(',') }}"
     command:
