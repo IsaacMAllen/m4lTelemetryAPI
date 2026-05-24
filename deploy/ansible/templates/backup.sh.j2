@@ -16,7 +16,7 @@ INSTALL_DIR={{ api_install_dir }}
 PG_SERVICE=postgres
 
 # shellcheck disable=SC1091
-source "$INSTALL_DIR/.env"
+source "$INSTALL_DIR/secrets.env"
 
 export RESTIC_REPOSITORY RESTIC_PASSWORD B2_ACCOUNT_ID B2_ACCOUNT_KEY
 

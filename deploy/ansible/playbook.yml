@@ -263,17 +263,30 @@
       notify: restart api stack
       tags: [app]
 
-    # We render `.env` ONLY if it doesn't already exist, so that re-running
-    # the playbook never clobbers production secrets.  First-time-only; after
-    # that, edit /opt/m4l-telemetry/.env on the box manually (chmod 600).
-    - name: Render .env if missing
+    # secrets.env holds Postgres password + Backblaze/Restic keys.
+    # Rendered ONCE (force: false) -- re-running never clobbers production creds.
+    # To rotate: edit the file on the box directly, then `docker compose up -d`.
+    - name: Render secrets.env (first run only)
       ansible.builtin.template:
-        src: env.j2
-        dest: "{{ api_install_dir }}/.env"
+        src: secrets.env.j2
+        dest: "{{ api_install_dir }}/secrets.env"
         owner: "{{ ansible_user }}"
         group: "{{ ansible_user }}"
         mode: "0600"
         force: false
+      tags: [app]
+
+    # tokens.env holds the ingest bearer tokens -- intentionally re-rendered
+    # on every run so `ansible-playbook --tags app` is all it takes to rotate.
+    - name: Render tokens.env (updated on every run)
+      ansible.builtin.template:
+        src: tokens.env.j2
+        dest: "{{ api_install_dir }}/tokens.env"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+        force: true
+      notify: restart api stack
       tags: [app]
 
     # First deploy is a chicken-and-egg: this playbook configures the box

@@ -40,6 +40,22 @@ api_data_volume: m4l-telemetry-pgdata  # named docker volume for postgres
 api_workers: 2                         # uvicorn workers per container
 api_replicas: 1                        # number of api containers (single-VPS)
 
+# --- Ingest tokens ----------------------------------------------------------
+# Comma-separated bearer tokens accepted by POST /v1/events.
+# Convention: prefix with the release version so you can retire old tokens
+# cleanly.  Generate a new token: openssl rand -hex 24
+#
+# Rotation workflow:
+#   1. Generate a new token: openssl rand -hex 24
+#   2. Add it here with the new version prefix (keep the old one briefly
+#      so in-flight clients finish flushing -- remove it next release).
+#   3. Run: ansible-playbook -i inventory.yml playbook.yml --tags app
+#   4. Update bz.telemetry @token in your shipped device to the new value.
+#
+# Example multi-version window during a release:
+#   api_ingest_tokens: "v2_<new>,v1_<old>"  # both accepted, old removed next release
+api_ingest_tokens: "v1_REPLACE_WITH_openssl_rand_hex_24"
+
 # --- Backups (Backblaze B2 via restic) --------------------------------------
 backup_enabled: true
 backup_bucket: m4l-telemetry-backups   # B2 bucket name

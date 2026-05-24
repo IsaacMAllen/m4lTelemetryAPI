@@ -8,8 +8,9 @@
 #   - api      : the FastAPI service, exposed only on 127.0.0.1:8080.
 #                Caddy on the host forwards TLS traffic to it.
 #
-# Secrets come from /opt/m4l-telemetry/.env (chmod 600).  Compose's
-# `env_file` directive picks them up.
+# Secrets split into two files (both chmod 600):
+#   secrets.env  -- rendered ONCE (Postgres password, Backblaze keys, Restic password)
+#   tokens.env   -- re-rendered by Ansible on every run (ingest bearer tokens)
 
 name: m4l-telemetry
 
@@ -37,7 +38,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    env_file: .env
+    env_file:
+      - secrets.env
+      - tokens.env
     environment:
       TELEMETRY_DB_HOST: postgres
       TELEMETRY_DB_PORT: "5432"
@@ -57,13 +60,15 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    env_file: .env
+    env_file:
+      - secrets.env
+      - tokens.env
     environment:
       TELEMETRY_DB_HOST: postgres
       TELEMETRY_DB_PORT: "5432"
       TELEMETRY_DB_USER: telemetry
       TELEMETRY_DB_NAME: telemetry
-      TELEMETRY_DB_PASSWORD: ${POSTGRES_PASSWORD}     # see migrate service comment
+      TELEMETRY_DB_PASSWORD: ${POSTGRES_PASSWORD}
       TELEMETRY_LOG_LEVEL: INFO
       TELEMETRY_CORS_ORIGINS: "{{ api_cors_origins | join(',') }}"
     command:
