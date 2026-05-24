@@ -100,12 +100,64 @@
     # `/etc/ufw/applications.d/`.  Ubuntu ships OpenSSH but not generic
     # http/https profiles -- those only appear once a webserver package
     # registers them.  Using plain ports avoids the chicken-and-egg.
-    - name: UFW allow HTTP + HTTPS (by port)
+    - name: UFW allow HTTP + HTTPS from anywhere (when not locked to Cloudflare)
       community.general.ufw:
         rule: allow
         port: "{{ item }}"
         proto: tcp
       loop: ["80", "443"]
+      when: not lock_to_cloudflare | default(false)
+      tags: [base]
+
+    # When `lock_to_cloudflare` is true, only Cloudflare's published IP
+    # ranges may reach 80/443.  This is the right setting once the proxy
+    # is on -- it stops anyone who knows the origin IP from bypassing
+    # Cloudflare's WAF/rate limiting.  A cron refresh keeps the list
+    # current as Cloudflare adds/removes IPs.
+    - name: Install Cloudflare-only firewall script
+      ansible.builtin.copy:
+        dest: /usr/local/bin/ufw-allow-cloudflare
+        owner: root
+        group: root
+        mode: "0750"
+        content: |
+          #!/usr/bin/env bash
+          # /usr/local/bin/ufw-allow-cloudflare  --  managed by Ansible
+          # Sync UFW so 80/443 are reachable only from Cloudflare ranges.
+          set -euo pipefail
+
+          # 1) Drop any existing 80/443 allow rules so we start clean.
+          ufw status numbered \
+              | awk -F'[][]' '/ALLOW IN.*(80|443)/{print $2}' \
+              | sort -rn \
+              | xargs -I{} bash -c 'yes | ufw delete {}' >/dev/null 2>&1 || true
+
+          # 2) Allow current Cloudflare ranges (v4 + v6).
+          for cidr in $(curl -fsS https://www.cloudflare.com/ips-v4) \
+                      $(curl -fsS https://www.cloudflare.com/ips-v6); do
+              ufw allow proto tcp from "$cidr" to any port 80
+              ufw allow proto tcp from "$cidr" to any port 443
+          done
+
+          ufw reload
+      when: lock_to_cloudflare | default(false)
+      tags: [base]
+
+    - name: Run Cloudflare firewall sync now
+      ansible.builtin.command: /usr/local/bin/ufw-allow-cloudflare
+      when: lock_to_cloudflare | default(false)
+      changed_when: true
+      tags: [base]
+
+    - name: Schedule weekly Cloudflare firewall refresh
+      ansible.builtin.cron:
+        name: refresh cloudflare firewall ranges
+        weekday: "0"
+        minute: "23"
+        hour: "4"
+        user: root
+        job: /usr/local/bin/ufw-allow-cloudflare >> /var/log/ufw-cloudflare.log 2>&1
+      when: lock_to_cloudflare | default(false)
       tags: [base]
 
     - name: UFW enable

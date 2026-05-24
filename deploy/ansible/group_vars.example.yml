@@ -7,6 +7,22 @@
 api_fqdn: api.yourdomain.com           # public hostname for the API
 admin_email: you@yourdomain.com        # used by Caddy/Let's Encrypt for renewal alerts
 
+# How Caddy obtains a TLS certificate.  Two supported values:
+#   letsencrypt          - Caddy auto-acquires a public Let's Encrypt cert
+#                          via HTTP-01.  Requires Cloudflare proxy OFF
+#                          (gray cloud) or no proxy at all.
+#   cloudflare_origin_ca - Caddy serves a Cloudflare Origin CA cert that
+#                          you generate in the Cloudflare dashboard and
+#                          place at /etc/caddy/origin.{crt,key}.  Pair
+#                          with Cloudflare SSL/TLS mode "Full (Strict)".
+tls_mode: letsencrypt
+
+# When true, restrict UFW so ports 80/443 are reachable ONLY from
+# Cloudflare's published IP ranges.  Prevents attackers from bypassing
+# the proxy by hitting the origin IP directly.  Refreshed weekly by
+# a cron the playbook installs.
+lock_to_cloudflare: false
+
 # --- Frontend (CORS) --------------------------------------------------------
 # Origins that can call the API from a browser.  Add the bytr Cloudflare
 # Pages origin here once you know it.  For preview deploys you may want to

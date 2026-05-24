@@ -1,20 +1,31 @@
 #
 # /etc/caddy/Caddyfile  --  managed by Ansible, edits will be overwritten
 #
-# Caddy automatically requests a Let's Encrypt cert for {{ api_fqdn }} on
-# first start and renews it ~30 days before expiry.  No certbot, no cron.
+# Two TLS modes are supported, switched via the `tls_mode` group_var:
+#   letsencrypt          - Caddy auto-acquires a Let's Encrypt cert
+#                          via HTTP-01.  Cloudflare proxy MUST be off.
+#   cloudflare_origin_ca - Caddy serves a Cloudflare Origin CA cert
+#                          you generated in the Cloudflare dashboard.
+#                          Pair with Cloudflare SSL/TLS = "Full (Strict)".
 #
 
 {
+{% if tls_mode == 'letsencrypt' %}
     email {{ admin_email }}
-    # If you want HTTP/3 / QUIC, uncomment:
-    # servers {
-    #     protocols h1 h2 h2c h3
-    # }
+{% endif %}
 }
 
 {{ api_fqdn }} {
+{% if tls_mode == 'cloudflare_origin_ca' %}
+    # Origin CA certs are only trusted by Cloudflare's edge, not by browsers.
+    # Cloudflare connects to us using these and presents a real public cert
+    # to end users.  Files come from /etc/caddy/origin.{crt,key} (chmod 640,
+    # caddy:caddy).  See deploy/README.md for how to generate them.
+    tls /etc/caddy/origin.crt /etc/caddy/origin.key
+{% endif %}
+
     encode zstd gzip
+
     log {
         output file /var/log/caddy/api.access.log {
             roll_size  20mb
@@ -23,13 +34,14 @@
         format json
     }
 
-    # Forward everything to the API container; Caddy handles TLS.
     reverse_proxy 127.0.0.1:8080 {
         header_up X-Forwarded-Proto https
-        header_up X-Forwarded-For   {remote_host}
+        # When behind Cloudflare, prefer their canonical client IP header
+        # over the (forged-able) standard one.  Caddy automatically maps
+        # CF-Connecting-IP into request.remote_addr when present.
+        header_up X-Forwarded-For   {http.request.header.CF-Connecting-IP}
     }
 
-    # Hardening headers.
     header {
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
         X-Content-Type-Options    "nosniff"
